@@ -41,6 +41,18 @@ contract PropertyFactory is ReentrancyGuard {
         address indexed to,
         uint256 amount
     );
+    event TokensPurchased(
+        uint256 indexed propertyId,
+        address indexed buyer,
+        uint256 amount,
+        uint256 totalCost
+    );
+    event PurchaseDebug(
+        uint256 tokenAmount,
+        uint256 pricePerToken,
+        uint256 calculatedCost,
+        uint256 msgValue
+    );
 
     modifier onlyAdmin() {
         require(accessControl.isUserAdmin(msg.sender), "Not admin");
@@ -184,6 +196,57 @@ contract PropertyFactory is ReentrancyGuard {
         emit TokensDistributed(propertyId, to, amount);
     }
 
+    /**
+     * @notice Purchase tokens directly by sending HBAR
+     * @dev User must send exact HBAR amount = tokenAmount * pricePerToken
+     * @param propertyId The ID of the property
+     * @param tokenAmount The number of tokens to purchase
+     */
+    function purchaseTokens(
+        uint256 propertyId,
+        uint256 tokenAmount
+    ) external payable validProperty(propertyId) whenNotPaused nonReentrant {
+        require(tokenAmount > 0, "Invalid token amount");
+        require(accessControl.isUserKYCed(msg.sender), "Buyer not KYC verified");
+
+        Property memory property = properties[propertyId];
+        require(property.isActive, "Property not active");
+
+        // Hedera-specific: msg.value comes in tinybars (10^8 per HBAR)
+        // Contract stores prices in wei units (10^18 per ether)
+        // Conversion: wei_value / 10^10 = tinybar_value
+        uint256 totalCostWei = (tokenAmount * property.pricePerToken) / 10**18;
+        uint256 totalCostTinybars = totalCostWei / 10**10;
+
+        emit PurchaseDebug(tokenAmount, property.pricePerToken, totalCostTinybars, msg.value);
+
+        // msg.value is in tinybars on Hedera
+        require(msg.value >= totalCostTinybars, "Insufficient payment");
+
+        // Calculate refund if overpaid (in tinybars)
+        uint256 refund = msg.value - totalCostTinybars;
+
+        PropertyToken token = PropertyToken(property.tokenContract);
+
+        // Check factory has enough tokens
+        require(token.balanceOf(address(this)) >= tokenAmount, "Insufficient tokens available");
+
+        // Transfer tokens to buyer
+        require(token.transfer(msg.sender, tokenAmount), "Token transfer failed");
+
+        // Send exact payment to property creator (in tinybars)
+        (bool success, ) = property.creator.call{value: totalCostTinybars}("");
+        require(success, "Payment transfer failed");
+
+        // Refund overpayment if any (in tinybars)
+        if (refund > 0) {
+            (bool refundSuccess, ) = msg.sender.call{value: refund}("");
+            require(refundSuccess, "Refund transfer failed");
+        }
+
+        emit TokensPurchased(propertyId, msg.sender, tokenAmount, totalCostWei);
+    }
+
     function getProperty(uint256 propertyId) external view validProperty(propertyId) returns (Property memory) {
         return properties[propertyId];
     }
@@ -232,6 +295,28 @@ contract PropertyFactory is ReentrancyGuard {
 
     function getPropertyToken(uint256 propertyId) external view validProperty(propertyId) returns (address) {
         return properties[propertyId].tokenContract;
+    }
+
+    /**
+     * @notice Calculate expected purchase cost in tinybars (Hedera native unit)
+     * @param propertyId The ID of the property
+     * @param tokenAmount The number of tokens to purchase
+     * @return expectedCostTinybars The calculated cost in tinybars
+     */
+    function calculatePurchaseCost(
+        uint256 propertyId,
+        uint256 tokenAmount
+    ) external view validProperty(propertyId) returns (uint256 expectedCostTinybars) {
+        Property memory property = properties[propertyId];
+        uint256 costWei = (tokenAmount * property.pricePerToken) / 10**18;
+        expectedCostTinybars = costWei / 10**10;
+    }
+
+    /**
+     * @notice Debug function to check what msg.value arrives
+     */
+    function testMsgValue() external payable returns (uint256) {
+        return msg.value;
     }
 
     function _toString(uint256 value) internal pure returns (string memory) {

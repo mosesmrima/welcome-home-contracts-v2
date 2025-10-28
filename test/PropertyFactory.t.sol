@@ -768,4 +768,222 @@ contract PropertyFactoryTest is Test {
         // Note: Update operations don't check pause status in current implementation
         // This might be intentional for admin management during maintenance
     }
+
+    // ===== PURCHASE TOKENS TESTS =====
+
+    function test_PurchaseTokens_PaymentCalculation_Debug() public {
+        // Create property with simple values for debugging
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,  // 1000 HBAR total value
+            100000 * 1e18,  // 100,000 tokens
+            0.01 ether  // 0.01 HBAR per token (10000000000000000 wei)
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Get property details
+        PropertyFactory.Property memory property = propertyFactory.getProperty(propertyId);
+
+        console.log("=== PROPERTY DETAILS ===");
+        console.log("pricePerToken:", property.pricePerToken);
+        console.log("totalSupply:", property.totalSupply);
+
+        // Calculate payment for 10 tokens
+        uint256 tokenAmount = 10 * 1e18;  // 10 tokens
+        console.log("\n=== PURCHASE CALCULATION ===");
+        console.log("tokenAmount:", tokenAmount);
+
+        uint256 expectedTotalCost = (tokenAmount * property.pricePerToken) / 10**18;
+        console.log("expectedTotalCost (manual calc):", expectedTotalCost);
+        console.log("expectedTotalCost in HBAR:", expectedTotalCost / 1e18);
+
+        // Try purchase with calculated amount
+        vm.deal(user1, 1 ether);  // Give user1 some HBAR
+
+        console.log("\n=== ATTEMPTING PURCHASE ===");
+        console.log("msg.value:", expectedTotalCost);
+        console.log("msg.sender:", user1);
+
+        vm.prank(user1);
+        propertyFactory.purchaseTokens{value: expectedTotalCost}(propertyId, tokenAmount);
+
+        // Verify tokens were transferred
+        PropertyToken token = PropertyToken(property.tokenContract);
+        uint256 userBalance = token.balanceOf(user1);
+        console.log("\n=== POST-PURCHASE ===");
+        console.log("user1 token balance:", userBalance);
+
+        assertEq(userBalance, tokenAmount, "User should have received tokens");
+    }
+
+    function test_PurchaseTokens_ExactPayment_1Token() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether  // 0.01 HBAR per token
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Purchase 1 token
+        uint256 tokenAmount = 1 * 1e18;  // 1 token
+        uint256 payment = 0.01 ether;  // Exact price for 1 token
+
+        console.log("Buying 1 token for", payment, "wei");
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        propertyFactory.purchaseTokens{value: payment}(propertyId, tokenAmount);
+
+        PropertyFactory.Property memory property = propertyFactory.getProperty(propertyId);
+        PropertyToken token = PropertyToken(property.tokenContract);
+        assertEq(token.balanceOf(user1), tokenAmount);
+    }
+
+    function test_PurchaseTokens_ExactPayment_100Tokens() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether  // 0.01 HBAR per token
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Purchase 100 tokens
+        uint256 tokenAmount = 100 * 1e18;  // 100 tokens
+        uint256 payment = 1 ether;  // 100 * 0.01 = 1 HBAR
+
+        console.log("Buying 100 tokens for", payment, "wei");
+
+        vm.deal(user1, 10 ether);
+        vm.prank(user1);
+        propertyFactory.purchaseTokens{value: payment}(propertyId, tokenAmount);
+
+        PropertyFactory.Property memory property = propertyFactory.getProperty(propertyId);
+        PropertyToken token = PropertyToken(property.tokenContract);
+        assertEq(token.balanceOf(user1), tokenAmount);
+    }
+
+    function test_PurchaseTokens_IncorrectPayment_TooLittle() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Try to purchase with insufficient payment
+        uint256 tokenAmount = 10 * 1e18;
+        uint256 correctPayment = 0.1 ether;
+        uint256 insufficientPayment = 0.09 ether;
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert("Incorrect payment amount");
+        propertyFactory.purchaseTokens{value: insufficientPayment}(propertyId, tokenAmount);
+    }
+
+    function test_PurchaseTokens_IncorrectPayment_TooMuch() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Try to purchase with too much payment
+        uint256 tokenAmount = 10 * 1e18;
+        uint256 correctPayment = 0.1 ether;
+        uint256 excessivePayment = 0.11 ether;
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert("Incorrect payment amount");
+        propertyFactory.purchaseTokens{value: excessivePayment}(propertyId, tokenAmount);
+    }
+
+    function test_PurchaseTokens_PaymentGoesToCreator() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether
+        );
+
+        // KYC verify factory and buyer
+        accessControl.setKYCStatus(address(propertyFactory), true);
+        accessControl.setKYCStatus(user1, true);
+
+        // Record creator balance before
+        uint256 creatorBalanceBefore = propertyManager1.balance;
+
+        // Purchase tokens
+        uint256 tokenAmount = 10 * 1e18;
+        uint256 payment = 0.1 ether;
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        propertyFactory.purchaseTokens{value: payment}(propertyId, tokenAmount);
+
+        // Check creator received payment
+        uint256 creatorBalanceAfter = propertyManager1.balance;
+        assertEq(creatorBalanceAfter - creatorBalanceBefore, payment, "Creator should receive payment");
+    }
+
+    function test_PurchaseTokens_RequiresKYC() public {
+        // Create property
+        vm.prank(propertyManager1);
+        uint256 propertyId = propertyFactory.createProperty(
+            "Test Property",
+            "https://test.com",
+            1000 ether,
+            100000 * 1e18,
+            0.01 ether
+        );
+
+        // DON'T KYC verify buyer
+
+        // Try to purchase
+        uint256 tokenAmount = 10 * 1e18;
+        uint256 payment = 0.1 ether;
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert("Buyer not KYC verified");
+        propertyFactory.purchaseTokens{value: payment}(propertyId, tokenAmount);
+    }
 }
